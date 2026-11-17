@@ -62,6 +62,25 @@ jobs:
         shell: pwsh
         run: lib/scripts/patch.ps1 iOS
 
+      # connectivity_plus 7.3.x 用了 NWPath.isUltraConstrained（iOS 26 SDK 新增成员）。
+      # 源码里虽然写了 #available(iOS 26.0, *)，但那只挡运行时，挡不住编译期——
+      # 在 Xcode 16 / iOS 18 SDK 的 macos-15 机器上会直接编译报错。
+      # 这里把那 3 行删掉：卫星网络识别失效，其余完全不受影响，新旧 SDK 都能编。
+      - name: 兼容旧 SDK（去掉 iOS 26 独占 API）
+        run: |
+          set -e
+          F=$(find "$HOME/.pub-cache/hosted/pub.dev" -maxdepth 1 -name "connectivity_plus-*" \
+              -print -quit 2>/dev/null || true)
+          if [ -z "$F" ]; then echo "未找到 connectivity_plus，跳过"; exit 0; fi
+          FILE="$F/ios/connectivity_plus/Sources/connectivity_plus/PathMonitorConnectivityProvider.swift"
+          if [ ! -f "$FILE" ]; then echo "路径不同，跳过：$FILE"; exit 0; fi
+          if grep -q isUltraConstrained "$FILE"; then
+            awk 'BEGIN{skip=0} /isUltraConstrained/{skip=3} skip>0{skip--; next} {print}' \
+              "$FILE" > "$FILE.tmp" && mv "$FILE.tmp" "$FILE"
+            echo "已移除 isUltraConstrained 分支"
+          fi
+          grep -c isUltraConstrained "$FILE" || echo "确认：文件里已无该 API"
+
       - name: Build iOS
         run: |
           flutter build ios --release --no-codesign --dart-define-from-file=pili_release.json --no-pub
