@@ -10,9 +10,13 @@ on:
   workflow_dispatch:
     inputs:
       runner:
-        description: "macOS runner 标签（macos-26 排队久时可换 macos-15）"
+        description: "macOS runner 标签（macos-15 通常比 macos-26 好排）"
         required: false
-        default: "macos-26"
+        default: "macos-15"
+      retry:
+        description: "失败自动重试次数（0 = 不重试）"
+        required: false
+        default: "5"
       tag:
         description: "可选：填 tag 名会额外发 Release（如 v2.2.1-back）"
         required: false
@@ -20,10 +24,11 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   build:
-    runs-on: ${{ inputs.runner || 'macos-26' }}
+    runs-on: ${{ inputs.runner || 'macos-15' }}
     timeout-minutes: 90
 
     steps:
@@ -116,10 +121,37 @@ jobs:
           path: PiliPlus_ios_*_back.ipa
           retention-days: 14
 
-      - name: Release
-        if: ${{ github.event.inputs.tag != '' }}
+      # 成功即发 Release：这样 IPA 有个长期可下的地址，
+      # 不依赖 artifact 的 14 天保留期，也不依赖我这边是否还在线。
+      - name: 发布 Release
+        if: success()
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag }}
-          name: ${{ github.event.inputs.tag }}
+          tag_name: ${{ inputs.tag != '' && inputs.tag || format('back-{0}', github.run_number) }}
+          name: ${{ inputs.tag != '' && inputs.tag || format('PiliPlus 返回键版 · build {0}', github.run_number) }}
+          body: |
+            自动构建的未签名 IPA（含右下角返回键）。
+            安装：TrollStore 直接打开 .ipa。
+            构建 run: #${{ github.run_number }}
           files: PiliPlus_ios_*_back.ipa
+
+      # 失败自动重跑：主要治「排队排不到机器」这种偶发问题。
+      # 编译错误重跑不会自己好，但会保留日志，方便下一步定位。
+      - name: 失败自动重试
+        if: failure() && inputs.retry != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          n=$(( ${{ inputs.retry }} - 1 ))
+          echo "剩余重试次数：$n"
+          if [ "$n" -gt 0 ]; then
+            sleep 30
+            gh workflow run build-ios-ipa.yml \
+              --repo "${{ github.repository }}" \
+              --ref "${{ github.ref_name }}" \
+              -f runner="${{ inputs.runner }}" \
+              -f retry="$n"
+            echo "已排队下一次尝试"
+          else
+            echo "重试次数用尽，停止"
+          fi
