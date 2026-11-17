@@ -38,7 +38,14 @@ jobs:
       - name: 注入右下角返回键
         run: |
           set -e
-          git apply back-button.patch || patch -p1 -F3 --no-backup-if-mismatch < back-button.patch
+          # 两种情况都兼容：源码里已经有改动（用 Contents API 直接写进来的），
+          # 或者只有补丁文件（手动上传 back-button.patch 的用法）。
+          if grep -q "BackButtonOverlay" lib/main.dart; then
+            echo "main.dart 已包含返回键，跳过补丁"
+          else
+            git apply back-button.patch \
+              || patch -p1 -F3 --forward --no-backup-if-mismatch < back-button.patch
+          fi
           echo "--- 校验改动已落地 ---"
           grep -n "floating_back_button\|BackStackObserver\|BackButtonOverlay" lib/main.dart
           test -f lib/common/widgets/floating_back_button.dart
