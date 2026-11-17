@@ -1,0 +1,261 @@
+diff --git a/lib/common/widgets/floating_back_button.dart b/lib/common/widgets/floating_back_button.dart
+new file mode 100644
+index 0000000..89f6549
+--- /dev/null
++++ b/lib/common/widgets/floating_back_button.dart
+@@ -0,0 +1,221 @@
++import 'dart:async';
++
++import 'package:flutter/material.dart';
++import 'package:flutter/rendering.dart' show ScrollDirection;
++import 'package:flutter/services.dart';
++
++/// 右下角常驻返回键。
++///
++/// 用途：屏幕左侧边缘触摸失灵时，提供一个随时可点的「返回上一级」入口。
++///
++/// 效果与逻辑照 PiliPlus 视频页右下角那个浮动按钮（其实是「发表评论」）做的，
++/// 见 lib/pages/video/reply/view.dart 里的 FloatingActionButton + BaseFabMixin：
++///   · 外观：M3 FloatingActionButton（圆角方形、主题色、带阴影）
++///   · 位置：右边距 16、贴安全区——这里再抬高 64，正好落在它上方，不叠在一起
++///   · 动效：往下翻时向下滑出、回滚或停手后滑回，120ms easeInOut
++///   · 触发：同样监听 UserScrollNotification，reverse 收起、forward 放出
++/// 额外加了两条：停手 700ms 自动放回（否则滑到底要反向拉一下才能按），
++/// 键盘弹出时收起（此时它正好压在输入栏上）。
++///
++/// 只改外观的话看下面几个常量就够了。
++const double _kMargin = 16;
++
++/// 比页面自带的 FAB 再高一点（56 高 + 8 间隙），避免和它叠在一起。
++const double _kLift = 64;
++
++/// 与 PiliPlus 的 BaseFabMixin 保持一致。
++const Duration _kAnimDuration = Duration(milliseconds: 120);
++
++/// 停止滚动后多久把按钮放回来。
++const Duration _kIdleDelay = Duration(milliseconds: 700);
++
++/// M3 FAB 的标准高度，用来算「滑到屏幕外」需要移动多少像素。
++const double _kFabSize = 56;
++
++/// 跟踪根 Navigator 的栈深度，决定返回键要不要出现。
++///
++/// 注册成 GetMaterialApp 的 navigatorObserver 之后，每次 push/pop 都会同步一次
++/// `canPop`，按钮据此滑入/滑出。放在首页根路由时 canPop 为 false，按钮隐藏，
++/// 不会挡住内容。
++class BackStackObserver extends NavigatorObserver {
++  BackStackObserver._();
++
++  static final BackStackObserver instance = BackStackObserver._();
++
++  final ValueNotifier<bool> canPop = ValueNotifier<bool>(false);
++
++  void _sync() {
++    final state = navigator;
++    if (state == null) return;
++    canPop.value = state.canPop();
++  }
++
++  @override
++  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) => _sync();
++
++  @override
++  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) => _sync();
++
++  @override
++  void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) => _sync();
++
++  @override
++  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) => _sync();
++}
++
++/// 把整个 App 包一层，右下角挂返回键。
++///
++/// 放在 GetMaterialApp 的 builder 里，位于 Navigator 之上，所以每个页面都有，
++/// 全屏播放器、弹层之上也都在，且不需要改任何页面。
++class BackButtonOverlay extends StatefulWidget {
++  const BackButtonOverlay({
++    super.key,
++    required this.child,
++    required this.onBack,
++  });
++
++  final Widget child;
++
++  /// 通常传 main.dart 里已有的 `_onBack`：
++  /// 它会先关掉 SmartDialog，再处理 GetPageRoute 的 popDisposition，最后 navigator.pop()。
++  final VoidCallback onBack;
++
++  @override
++  State<BackButtonOverlay> createState() => _BackButtonOverlayState();
++}
++
++class _BackButtonOverlayState extends State<BackButtonOverlay>
++    with SingleTickerProviderStateMixin {
++  late final AnimationController _ctrl;
++
++  /// 因为「往下翻内容」而临时收起。
++  bool _scrollHidden = false;
++
++  /// 键盘弹出时收起：此时的返回语义是「收键盘」，而且它正好会压在输入栏上。
++  bool _keyboardUp = false;
++
++  Timer? _idle;
++
++  @override
++  void initState() {
++    super.initState();
++    // value: 1 表示动画停在「藏起来」那一端，冷启动时不会先闪一下。
++    _ctrl = AnimationController(
++      vsync: this,
++      duration: _kAnimDuration,
++      value: 1,
++    );
++    BackStackObserver.instance.canPop.addListener(_sync);
++    _sync();
++  }
++
++  @override
++  void didChangeDependencies() {
++    super.didChangeDependencies();
++    final up = MediaQuery.viewInsetsOf(context).bottom > 0;
++    if (up != _keyboardUp) {
++      _keyboardUp = up;
++      _sync();
++    }
++  }
++
++  @override
++  void dispose() {
++    _idle?.cancel();
++    BackStackObserver.instance.canPop.removeListener(_sync);
++    _ctrl.dispose();
++    super.dispose();
++  }
++
++  void _sync() {
++    if (!mounted) return;
++    final show =
++        BackStackObserver.instance.canPop.value && !_scrollHidden && !_keyboardUp;
++    if (show) {
++      _ctrl.reverse();
++    } else {
++      _ctrl.forward();
++    }
++  }
++
++  void _scheduleShow() {
++    _idle?.cancel();
++    _idle = Timer(_kIdleDelay, () {
++      if (!_scrollHidden) return;
++      _scrollHidden = false;
++      _sync();
++    });
++  }
++
++  /// 只认最外层、纵向的滚动。页面里横向的 TabBarView / 轮播不参与，
++  /// 否则左右切个 tab 按钮就抖一下。
++  bool _onScroll(ScrollNotification n) {
++    if (n.depth != 0 || n.metrics.axis != Axis.vertical) return false;
++
++    if (n is UserScrollNotification) {
++      // 注意 Flutter 的命名：ScrollDirection.forward 指 scroll offset 变小
++      // （往回滚，露出前面的内容），reverse 才是往下翻。与 BaseFabMixin 一致。
++      if (n.direction == ScrollDirection.reverse) {
++        // 往下翻：先收起来，别挡着内容。
++        if (!_scrollHidden) {
++          _scrollHidden = true;
++          _sync();
++        }
++      } else if (n.direction == ScrollDirection.forward) {
++        // 往回滚，多半是想退出，放出来。
++        if (_scrollHidden) {
++          _scrollHidden = false;
++          _sync();
++        }
++      } else {
++        _scheduleShow();
++      }
++    } else if (n is ScrollEndNotification) {
++      _scheduleShow();
++    }
++    return false;
++  }
++
++  void _handleTap() {
++    HapticFeedback.lightImpact();
++    widget.onBack();
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    // 可见时的底边距：安全区 + 16 + 64，正好落在页面自带 FAB 的上方。
++    final base = MediaQuery.paddingOf(context).bottom + _kMargin + _kLift;
++    return NotificationListener<ScrollNotification>(
++      onNotification: _onScroll,
++      child: Stack(
++        fit: StackFit.expand,
++        children: [
++          widget.child,
++          AnimatedBuilder(
++            animation: _ctrl,
++            // 直接算 bottom 而不是用 SlideTransition：按钮离屏幕底部有 80 的
++            // 间隙，按自身高度滑出的倍数在不同机型上不够，会露半个角在屏幕里。
++            // 这里按像素算，value 走到 1 时按钮整体（连阴影）已在屏幕外。
++            builder: (context, child) {
++              final t = Curves.easeInOut.transform(_ctrl.value);
++              return Positioned(
++                right: _kMargin,
++                bottom: base - t * (base + _kFabSize + 8),
++                child: IgnorePointer(
++                  ignoring: _ctrl.value > 0.01,
++                  child: child,
++                ),
++              );
++            },
++            // 和 PiliPlus 的 FAB 同款：主题色、圆角方形、带阴影，尺寸也一样。
++            child: FloatingActionButton(
++              heroTag: null,
++              onPressed: _handleTap,
++              child: const Icon(Icons.arrow_back_rounded, size: 26),
++            ),
++          ),
++        ],
++      ),
++    );
++  }
++}
+diff --git a/lib/main.dart b/lib/main.dart
+index 988da8d..b6939e1 100644
+--- a/lib/main.dart
++++ b/lib/main.dart
+@@ -3,6 +3,7 @@ import 'dart:io';
+ import 'package:PiliPlus/build_config.dart';
+ import 'package:PiliPlus/common/constants.dart';
+ import 'package:PiliPlus/common/widgets/back_detector.dart';
++import 'package:PiliPlus/common/widgets/floating_back_button.dart';
+ import 'package:PiliPlus/common/widgets/custom_toast.dart';
+ import 'package:PiliPlus/common/widgets/route_aware_mixin.dart';
+ import 'package:PiliPlus/common/widgets/scale_app.dart';
+@@ -316,6 +317,7 @@ class MyApp extends StatelessWidget {
+       navigatorObservers: [
+         routeObserver,
+         FlutterSmartDialog.observer,
++        BackStackObserver.instance,
+       ],
+       scrollBehavior: PlatformUtils.isDesktop
+           ? const CustomScrollBehavior()
+@@ -355,7 +357,12 @@ class MyApp extends StatelessWidget {
+         child: child,
+       );
+     }
+-    return child;
++    // 右下角常驻返回键：左侧边缘触摸失灵时的替代入口。
++    // 外观与动效对齐 PiliPlus 评论页那个浮动 FAB。
++    return BackButtonOverlay(
++      onBack: _onBack,
++      child: child ?? const SizedBox.shrink(),
++    );
+   }
+ 
+   /// from [DynamicColorBuilderState.initPlatformState]

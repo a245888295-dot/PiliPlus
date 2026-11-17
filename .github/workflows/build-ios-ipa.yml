@@ -1,0 +1,77 @@
+name: Build iOS IPA with back button
+
+# 在官方 .github/workflows/ios.yml 的基础上，只在最前面插一步：
+# 打上 back-button.patch，给 App 加一个右下角常驻返回键。
+# 其余步骤（版本号、Flutter SDK 补丁、无签名打包）与官方完全一致。
+#
+# 用法：仓库根目录放好 back-button.patch，然后手动触发本 workflow。
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "可选：填 tag 名会额外发 Release（如 v2.2.1-back）"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version-file: pubspec.yaml
+
+      # ---- 和官方唯一的区别 ----
+      - name: 注入右下角返回键
+        run: |
+          set -e
+          git apply back-button.patch || patch -p1 -F3 --no-backup-if-mismatch < back-button.patch
+          echo "--- 校验改动已落地 ---"
+          grep -n "floating_back_button\|BackStackObserver\|BackButtonOverlay" lib/main.dart
+          test -f lib/common/widgets/floating_back_button.dart
+
+      - name: Set and Extract version
+        shell: pwsh
+        run: lib/scripts/build.ps1
+
+      - name: Apply Patch
+        shell: pwsh
+        run: lib/scripts/patch.ps1 iOS
+
+      - name: Build iOS
+        run: |
+          flutter build ios --release --no-codesign --dart-define-from-file=pili_release.json --no-pub
+          ln -sf ./build/ios/iphoneos Payload
+          # 未签名包里每个 framework 都要 ad-hoc 签一遍，否则装到设备上 dyld 不加载
+          find Payload/Runner.app/Frameworks -type d -name "*.framework" \
+            -exec codesign --force --sign - --preserve-metadata=identifier,entitlements {} \;
+          zip -r9 "PiliPlus_ios_${version}_back.ipa" Payload/Runner.app
+          ls -lh *.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: PiliPlus-iOS-back-button
+          path: PiliPlus_ios_*_back.ipa
+          retention-days: 14
+
+      - name: Release
+        if: ${{ github.event.inputs.tag != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          name: ${{ github.event.inputs.tag }}
+          files: PiliPlus_ios_*_back.ipa

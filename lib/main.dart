@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:PiliPlus/build_config.dart';
 import 'package:PiliPlus/common/constants.dart';
 import 'package:PiliPlus/common/widgets/back_detector.dart';
+import 'package:PiliPlus/common/widgets/floating_back_button.dart';
 import 'package:PiliPlus/common/widgets/custom_toast.dart';
 import 'package:PiliPlus/common/widgets/route_aware_mixin.dart';
 import 'package:PiliPlus/common/widgets/scale_app.dart';
@@ -316,6 +317,7 @@ class MyApp extends StatelessWidget {
       navigatorObservers: [
         routeObserver,
         FlutterSmartDialog.observer,
+        BackStackObserver.instance,
       ],
       scrollBehavior: PlatformUtils.isDesktop
           ? const CustomScrollBehavior()
@@ -355,7 +357,12 @@ class MyApp extends StatelessWidget {
         child: child,
       );
     }
-    return child;
+    // 右下角常驻返回键：左侧边缘触摸失灵时的替代入口。
+    // 外观与动效对齐 PiliPlus 评论页那个浮动 FAB。
+    return BackButtonOverlay(
+      onBack: _onBack,
+      child: child ?? const SizedBox.shrink(),
+    );
   }
 
   /// from [DynamicColorBuilderState.initPlatformState]
