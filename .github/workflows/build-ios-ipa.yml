@@ -9,6 +9,10 @@ name: Build iOS IPA with back button
 on:
   workflow_dispatch:
     inputs:
+      runner:
+        description: "macOS runner 标签（macos-26 排队久时可换 macos-15）"
+        required: false
+        default: "macos-26"
       tag:
         description: "可选：填 tag 名会额外发 Release（如 v2.2.1-back）"
         required: false
@@ -19,7 +23,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-26
+    runs-on: ${{ inputs.runner || 'macos-26' }}
     timeout-minutes: 90
 
     steps:
