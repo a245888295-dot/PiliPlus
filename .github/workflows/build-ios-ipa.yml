@@ -62,9 +62,27 @@ jobs:
         shell: pwsh
         run: lib/scripts/patch.ps1 iOS
 
+      # macos-15 镜像里默认 Xcode 是 16.4（iOS 18 SDK），但同机装了 Xcode 26.3。
+      # 项目依赖的插件（connectivity_plus / device_info_plus 等）已经用了 iOS 26 SDK
+      # 才有的符号，用 16.4 编必然报 "no member / no visible @interface"。
+      # 这里按版本号挑机器上最新的 Xcode 切过去，macos-15 和 macos-26 都能一条路走通。
+      - name: 切换到最新 Xcode
+        run: |
+          set -e
+          echo "当前：$(xcodebuild -version | tr '\n' ' ')"
+          pick=$(ls -d /Applications/Xcode_2[6-9]*.app 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$pick" ]; then
+            sudo xcode-select -s "$pick"
+            echo "已切换到 $pick"
+          else
+            echo "未找到 Xcode 26+，沿用默认"
+          fi
+          xcodebuild -version
+          echo "iOS SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
+
       # connectivity_plus 7.3.x 用了 NWPath.isUltraConstrained（iOS 26 SDK 新增成员）。
       # 源码里虽然写了 #available(iOS 26.0, *)，但那只挡运行时，挡不住编译期——
-      # 在 Xcode 16 / iOS 18 SDK 的 macos-15 机器上会直接编译报错。
+      # 在 Xcode 16 / iOS 18 SDK 的机器上会直接编译报错。
       # 这里把那 3 行删掉：卫星网络识别失效，其余完全不受影响，新旧 SDK 都能编。
       - name: 兼容旧 SDK（去掉 iOS 26 独占 API）
         run: |
