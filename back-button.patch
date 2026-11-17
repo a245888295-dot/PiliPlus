@@ -1,9 +1,9 @@
 diff --git a/lib/common/widgets/floating_back_button.dart b/lib/common/widgets/floating_back_button.dart
 new file mode 100644
-index 0000000..89f6549
+index 0000000..45d95c1
 --- /dev/null
 +++ b/lib/common/widgets/floating_back_button.dart
-@@ -0,0 +1,221 @@
+@@ -0,0 +1,233 @@
 +import 'dart:async';
 +
 +import 'package:flutter/material.dart';
@@ -16,18 +16,21 @@ index 0000000..89f6549
 +///
 +/// 效果与逻辑照 PiliPlus 视频页右下角那个浮动按钮（其实是「发表评论」）做的，
 +/// 见 lib/pages/video/reply/view.dart 里的 FloatingActionButton + BaseFabMixin：
-+///   · 外观：M3 FloatingActionButton（圆角方形、主题色、带阴影）
-+///   · 位置：右边距 16、贴安全区——这里再抬高 64，正好落在它上方，不叠在一起
++///   · 外观：M3 FloatingActionButton（圆角方形、主题色、带阴影），图标沿用 Icons.reply
++///   · 位置：右边距 16、贴安全区——和那个按钮原来的位置一模一样
 +///   · 动效：往下翻时向下滑出、回滚或停手后滑回，120ms easeInOut
 +///   · 触发：同样监听 UserScrollNotification，reverse 收起、forward 放出
-+/// 额外加了两条：停手 700ms 自动放回（否则滑到底要反向拉一下才能按），
-+/// 键盘弹出时收起（此时它正好压在输入栏上）。
++///
++/// 视频页那个「发表评论」FAB 已经删掉了（每条评论自己带「回复」），
++/// 所以右下角只剩这一个键，看起来就是它原地变成了返回键。
++/// 额外加了两条：停手 700ms 自动放回、键盘弹出时收起；横屏（全屏播放）时不出。
 +///
 +/// 只改外观的话看下面几个常量就够了。
 +const double _kMargin = 16;
 +
 +/// 比页面自带的 FAB 再高一点（56 高 + 8 间隙），避免和它叠在一起。
-+const double _kLift = 64;
++/// 现在视频页那个「发表评论」FAB 已经被移除，所以贴到底：0。
++const double _kLift = 0;
 +
 +/// 与 PiliPlus 的 BaseFabMixin 保持一致。
 +const Duration _kAnimDuration = Duration(milliseconds: 120);
@@ -100,6 +103,9 @@ index 0000000..89f6549
 +  /// 键盘弹出时收起：此时的返回语义是「收键盘」，而且它正好会压在输入栏上。
 +  bool _keyboardUp = false;
 +
++  /// 横屏 = 全屏播放（PiliPlus 全屏时会强制横屏），这时不显示，免得压在播放控件上。
++  bool _landscape = false;
++
 +  Timer? _idle;
 +
 +  @override
@@ -118,9 +124,12 @@ index 0000000..89f6549
 +  @override
 +  void didChangeDependencies() {
 +    super.didChangeDependencies();
-+    final up = MediaQuery.viewInsetsOf(context).bottom > 0;
-+    if (up != _keyboardUp) {
++    final mq = MediaQuery.of(context);
++    final up = mq.viewInsets.bottom > 0;
++    final land = mq.orientation == Orientation.landscape;
++    if (up != _keyboardUp || land != _landscape) {
 +      _keyboardUp = up;
++      _landscape = land;
 +      _sync();
 +    }
 +  }
@@ -135,8 +144,10 @@ index 0000000..89f6549
 +
 +  void _sync() {
 +    if (!mounted) return;
-+    final show =
-+        BackStackObserver.instance.canPop.value && !_scrollHidden && !_keyboardUp;
++    final show = BackStackObserver.instance.canPop.value &&
++        !_scrollHidden &&
++        !_keyboardUp &&
++        !_landscape;
 +    if (show) {
 +      _ctrl.reverse();
 +    } else {
@@ -217,7 +228,8 @@ index 0000000..89f6549
 +            child: FloatingActionButton(
 +              heroTag: null,
 +              onPressed: _handleTap,
-+              child: const Icon(Icons.arrow_back_rounded, size: 26),
++              // 沿用原来那个「发表评论」的图标（本来就是弯箭头），不换更自然
++              child: const Icon(Icons.reply, size: 26),
 +            ),
 +          ),
 +        ],
@@ -259,3 +271,37 @@ index 988da8d..b6939e1 100644
    }
  
    /// from [DynamicColorBuilderState.initPlatformState]
+diff --git a/lib/pages/video/reply/view.dart b/lib/pages/video/reply/view.dart
+index c0af093..579839a 100644
+--- a/lib/pages/video/reply/view.dart
++++ b/lib/pages/video/reply/view.dart
+@@ -116,29 +116,6 @@ class _VideoReplyPanelState extends State<VideoReplyPanel>
+               Obx(() => _buildBody(controller.loadingState.value)),
+             ],
+           ),
+-          fab: SlideTransition(
+-            position: fabAnimation,
+-            child: Padding(
+-              padding: .only(
+-                right: kFloatingActionButtonMargin,
+-                bottom: kFloatingActionButtonMargin + padding.bottom,
+-              ),
+-              child: FloatingActionButton(
+-                heroTag: null,
+-                onPressed: () {
+-                  feedBack();
+-                  controller.onReply(
+-                    null,
+-                    oid: controller.videoCtr.aid,
+-                    replyType: controller.replyType,
+-                    mentionItem: controller.mentionItem,
+-                  );
+-                },
+-                tooltip: '发表评论',
+-                child: const Icon(Icons.reply),
+-              ),
+-            ),
+-          ),
+         ),
+       ),
+     );
