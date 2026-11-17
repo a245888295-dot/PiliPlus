@@ -116,29 +116,6 @@ class _VideoReplyPanelState extends State<VideoReplyPanel>
               Obx(() => _buildBody(controller.loadingState.value)),
             ],
           ),
-          fab: SlideTransition(
-            position: fabAnimation,
-            child: Padding(
-              padding: .only(
-                right: kFloatingActionButtonMargin,
-                bottom: kFloatingActionButtonMargin + padding.bottom,
-              ),
-              child: FloatingActionButton(
-                heroTag: null,
-                onPressed: () {
-                  feedBack();
-                  controller.onReply(
-                    null,
-                    oid: controller.videoCtr.aid,
-                    replyType: controller.replyType,
-                    mentionItem: controller.mentionItem,
-                  );
-                },
-                tooltip: '发表评论',
-                child: const Icon(Icons.reply),
-              ),
-            ),
-          ),
         ),
       ),
     );
