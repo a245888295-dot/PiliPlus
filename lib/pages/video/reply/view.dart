@@ -116,6 +116,31 @@ class _VideoReplyPanelState extends State<VideoReplyPanel>
               Obx(() => _buildBody(controller.loadingState.value)),
             ],
           ),
+          // 发表评论：原来就在这个位置。抬到返回键上方 8px，避免两个按钮叠在一起；
+          // 图标换成气泡加号，和右下角那个箭头返回键区分开。
+          fab: SlideTransition(
+            position: fabAnimation,
+            child: Padding(
+              padding: .only(
+                right: kFloatingActionButtonMargin,
+                bottom: kFloatingActionButtonMargin + padding.bottom + 64,
+              ),
+              child: FloatingActionButton(
+                heroTag: null,
+                onPressed: () {
+                  feedBack();
+                  controller.onReply(
+                    null,
+                    oid: controller.videoCtr.aid,
+                    replyType: controller.replyType,
+                    mentionItem: controller.mentionItem,
+                  );
+                },
+                tooltip: '发表评论',
+                child: const Icon(Icons.add_comment),
+              ),
+            ),
+          ),
         ),
       ),
     );
