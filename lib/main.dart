@@ -357,10 +357,27 @@ class MyApp extends StatelessWidget {
         child: child,
       );
     }
-    // 右下角常驻返回键：左侧边缘触摸失灵时的替代入口。
-    // 外观与动效对齐 PiliPlus 评论页那个浮动 FAB。
+    // 常驻可拖动返回键：左侧边缘触摸失灵时的替代入口。
+    // 位置存进 Hive 的 setting box，归一化到 0..1，换机型也不会跑到屏幕外。
     return BackButtonOverlay(
       onBack: _onBack,
+      loadPosition: () {
+        try {
+          final v = GStorage.setting.get('backBtnPos');
+          if (v is List && v.length == 2) {
+            return Offset(
+              (v[0] as num).toDouble(),
+              (v[1] as num).toDouble(),
+            );
+          }
+        } catch (_) {}
+        return null;
+      },
+      savePosition: (p) {
+        try {
+          GStorage.setting.put('backBtnPos', [p.dx, p.dy]);
+        } catch (_) {}
+      },
       child: child ?? const SizedBox.shrink(),
     );
   }
