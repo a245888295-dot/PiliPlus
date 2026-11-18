@@ -1,45 +1,36 @@
 diff --git a/lib/common/widgets/floating_back_button.dart b/lib/common/widgets/floating_back_button.dart
 new file mode 100644
-index 0000000..45d95c1
+index 0000000..b3ba87f
 --- /dev/null
 +++ b/lib/common/widgets/floating_back_button.dart
-@@ -0,0 +1,233 @@
-+import 'dart:async';
+@@ -0,0 +1,273 @@
++import 'dart:math' as math;
 +
-+import 'package:flutter/material.dart';
-+import 'package:flutter/rendering.dart' show ScrollDirection;
++// PiliPlus 用的是自己 fork 的 material（见 pubspec 的 material_ui），
++// 主题、Scaffold、FAB 都来自这个包。若改用 flutter/material，
++// Theme.of 取不到 App 的配色，按钮会变成默认紫。
++import 'package:material_ui/material_ui.dart';
 +import 'package:flutter/services.dart';
 +
-+/// 右下角常驻返回键。
++/// 常驻可拖动的返回键。
 +///
 +/// 用途：屏幕左侧边缘触摸失灵时，提供一个随时可点的「返回上一级」入口。
 +///
-+/// 效果与逻辑照 PiliPlus 视频页右下角那个浮动按钮（其实是「发表评论」）做的，
-+/// 见 lib/pages/video/reply/view.dart 里的 FloatingActionButton + BaseFabMixin：
-+///   · 外观：M3 FloatingActionButton（圆角方形、主题色、带阴影），图标沿用 Icons.reply
-+///   · 位置：右边距 16、贴安全区——和那个按钮原来的位置一模一样
-+///   · 动效：往下翻时向下滑出、回滚或停手后滑回，120ms easeInOut
-+///   · 触发：同样监听 UserScrollNotification，reverse 收起、forward 放出
-+///
-+/// 视频页那个「发表评论」FAB 已经删掉了（每条评论自己带「回复」），
-+/// 所以右下角只剩这一个键，看起来就是它原地变成了返回键。
-+/// 额外加了两条：停手 700ms 自动放回、键盘弹出时收起；横屏（全屏播放）时不出。
++/// 外观沿用 PiliPlus 视频页那个浮动 FAB（M3 圆角方形、主题色、带阴影、Icons.reply），
++/// 区别是它现在可以按住拖动：
++///   · 按住拖动 → 跟手移动，松手吸附到最近的一条竖边
++///   · 位置会被记住（归一化存盘，换机型/换方向都还落在合理位置）
++///   · 不进全屏播放（横屏）时自动隐藏，退出来又回到原位
++///   · 不做滚动隐藏：这是「长驻」的意思——翻内容时它不会躲
 +///
 +/// 只改外观的话看下面几个常量就够了。
++const double _kSize = 56;
 +const double _kMargin = 16;
++const Duration _kSnapDuration = Duration(milliseconds: 180);
++const Duration _kFadeDuration = Duration(milliseconds: 120);
 +
-+/// 比页面自带的 FAB 再高一点（56 高 + 8 间隙），避免和它叠在一起。
-+/// 现在视频页那个「发表评论」FAB 已经被移除，所以贴到底：0。
-+const double _kLift = 0;
-+
-+/// 与 PiliPlus 的 BaseFabMixin 保持一致。
-+const Duration _kAnimDuration = Duration(milliseconds: 120);
-+
-+/// 停止滚动后多久把按钮放回来。
-+const Duration _kIdleDelay = Duration(milliseconds: 700);
-+
-+/// M3 FAB 的标准高度，用来算「滑到屏幕外」需要移动多少像素。
-+const double _kFabSize = 56;
++/// 往下/往上滑出时用的位移倍数：比一个按钮高一点，把阴影也带出去。
++const double _kSlideFactor = 1.35;
 +
 +/// 跟踪根 Navigator 的栈深度，决定返回键要不要出现。
 +///
@@ -72,15 +63,17 @@ index 0000000..45d95c1
 +  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) => _sync();
 +}
 +
-+/// 把整个 App 包一层，右下角挂返回键。
++/// 把整个 App 包一层，上面挂一个可拖动的返回键。
 +///
 +/// 放在 GetMaterialApp 的 builder 里，位于 Navigator 之上，所以每个页面都有，
-+/// 全屏播放器、弹层之上也都在，且不需要改任何页面。
++/// 弹层之上也在，且不需要改任何页面。
 +class BackButtonOverlay extends StatefulWidget {
 +  const BackButtonOverlay({
 +    super.key,
 +    required this.child,
 +    required this.onBack,
++    this.loadPosition,
++    this.savePosition,
 +  });
 +
 +  final Widget child;
@@ -89,32 +82,35 @@ index 0000000..45d95c1
 +  /// 它会先关掉 SmartDialog，再处理 GetPageRoute 的 popDisposition，最后 navigator.pop()。
 +  final VoidCallback onBack;
 +
++  /// 读取上次记住的位置，归一化到 0..1（相对于可用区域的宽/高）。
++  /// 传 null 就只在本次运行内记住位置。
++  final Offset? Function()? loadPosition;
++
++  /// 拖动结束后把新位置交出去存盘。
++  final void Function(Offset frac)? savePosition;
++
 +  @override
 +  State<BackButtonOverlay> createState() => _BackButtonOverlayState();
 +}
 +
 +class _BackButtonOverlayState extends State<BackButtonOverlay>
 +    with SingleTickerProviderStateMixin {
-+  late final AnimationController _ctrl;
++  late final AnimationController _fade;
 +
-+  /// 因为「往下翻内容」而临时收起。
-+  bool _scrollHidden = false;
++  /// 归一化位置；null 表示还没摆过，用默认的右下角。
++  Offset? _frac;
 +
-+  /// 键盘弹出时收起：此时的返回语义是「收键盘」，而且它正好会压在输入栏上。
-+  bool _keyboardUp = false;
-+
-+  /// 横屏 = 全屏播放（PiliPlus 全屏时会强制横屏），这时不显示，免得压在播放控件上。
++  bool _dragging = false;
 +  bool _landscape = false;
-+
-+  Timer? _idle;
 +
 +  @override
 +  void initState() {
 +    super.initState();
-+    // value: 1 表示动画停在「藏起来」那一端，冷启动时不会先闪一下。
-+    _ctrl = AnimationController(
++    _frac = widget.loadPosition?.call();
++    // value: 1 表示停在「藏起来」那一端，冷启动时不会先闪一下。
++    _fade = AnimationController(
 +      vsync: this,
-+      duration: _kAnimDuration,
++      duration: _kFadeDuration,
 +      value: 1,
 +    );
 +    BackStackObserver.instance.canPop.addListener(_sync);
@@ -124,11 +120,8 @@ index 0000000..45d95c1
 +  @override
 +  void didChangeDependencies() {
 +    super.didChangeDependencies();
-+    final mq = MediaQuery.of(context);
-+    final up = mq.viewInsets.bottom > 0;
-+    final land = mq.orientation == Orientation.landscape;
-+    if (up != _keyboardUp || land != _landscape) {
-+      _keyboardUp = up;
++    final land = MediaQuery.orientationOf(context) == Orientation.landscape;
++    if (land != _landscape) {
 +      _landscape = land;
 +      _sync();
 +    }
@@ -136,61 +129,19 @@ index 0000000..45d95c1
 +
 +  @override
 +  void dispose() {
-+    _idle?.cancel();
 +    BackStackObserver.instance.canPop.removeListener(_sync);
-+    _ctrl.dispose();
++    _fade.dispose();
 +    super.dispose();
 +  }
 +
 +  void _sync() {
 +    if (!mounted) return;
-+    final show = BackStackObserver.instance.canPop.value &&
-+        !_scrollHidden &&
-+        !_keyboardUp &&
-+        !_landscape;
++    final show = BackStackObserver.instance.canPop.value && !_landscape;
 +    if (show) {
-+      _ctrl.reverse();
++      _fade.reverse();
 +    } else {
-+      _ctrl.forward();
++      _fade.forward();
 +    }
-+  }
-+
-+  void _scheduleShow() {
-+    _idle?.cancel();
-+    _idle = Timer(_kIdleDelay, () {
-+      if (!_scrollHidden) return;
-+      _scrollHidden = false;
-+      _sync();
-+    });
-+  }
-+
-+  /// 只认最外层、纵向的滚动。页面里横向的 TabBarView / 轮播不参与，
-+  /// 否则左右切个 tab 按钮就抖一下。
-+  bool _onScroll(ScrollNotification n) {
-+    if (n.depth != 0 || n.metrics.axis != Axis.vertical) return false;
-+
-+    if (n is UserScrollNotification) {
-+      // 注意 Flutter 的命名：ScrollDirection.forward 指 scroll offset 变小
-+      // （往回滚，露出前面的内容），reverse 才是往下翻。与 BaseFabMixin 一致。
-+      if (n.direction == ScrollDirection.reverse) {
-+        // 往下翻：先收起来，别挡着内容。
-+        if (!_scrollHidden) {
-+          _scrollHidden = true;
-+          _sync();
-+        }
-+      } else if (n.direction == ScrollDirection.forward) {
-+        // 往回滚，多半是想退出，放出来。
-+        if (_scrollHidden) {
-+          _scrollHidden = false;
-+          _sync();
-+        }
-+      } else {
-+        _scheduleShow();
-+      }
-+    } else if (n is ScrollEndNotification) {
-+      _scheduleShow();
-+    }
-+    return false;
 +  }
 +
 +  void _handleTap() {
@@ -198,47 +149,136 @@ index 0000000..45d95c1
 +    widget.onBack();
 +  }
 +
++  void _onDragStart(DragStartDetails _) {
++    setState(() => _dragging = true);
++    HapticFeedback.selectionClick();
++  }
++
++  void _onDragUpdate(DragUpdateDetails d, Size max) {
++    final cur = _resolve(max);
++    final next = Offset(
++      (cur.dx + d.delta.dx).clamp(0.0, max.width),
++      (cur.dy + d.delta.dy).clamp(0.0, max.height),
++    );
++    setState(() => _frac = Offset(
++          max.width <= 0 ? 0 : next.dx / max.width,
++          max.height <= 0 ? 0 : next.dy / max.height,
++        ));
++  }
++
++  void _onDragEnd(DragEndDetails _, Size max) {
++    final cur = _resolve(max);
++    // 吸附到更近的那条竖边，别停在屏幕中间挡内容。
++    final toRight = cur.dx + _kSize / 2 >= max.width / 2 + _kSize / 2;
++    final x = toRight ? max.width : 0.0;
++    final y = cur.dy;
++    final frac = Offset(
++      max.width <= 0 ? 0 : x / max.width,
++      max.height <= 0 ? 0 : y / max.height,
++    );
++    setState(() {
++      _dragging = false;
++      _frac = frac;
++    });
++    widget.savePosition?.call(frac);
++    HapticFeedback.mediumImpact();
++  }
++
++  /// 归一化位置 → 像素位置。没摆过就落在右下角（max 本身已经是「右下角」）。
++  Offset _resolve(Size max) {
++    final f = _frac;
++    if (f == null) return Offset(max.width, max.height);
++    return Offset(
++      (f.dx * max.width).clamp(0.0, max.width),
++      (f.dy * max.height).clamp(0.0, max.height),
++    );
++  }
++
 +  @override
 +  Widget build(BuildContext context) {
-+    // 可见时的底边距：安全区 + 16 + 64，正好落在页面自带 FAB 的上方。
-+    final base = MediaQuery.paddingOf(context).bottom + _kMargin + _kLift;
-+    return NotificationListener<ScrollNotification>(
-+      onNotification: _onScroll,
-+      child: Stack(
-+        fit: StackFit.expand,
-+        children: [
-+          widget.child,
-+          AnimatedBuilder(
-+            animation: _ctrl,
-+            // 直接算 bottom 而不是用 SlideTransition：按钮离屏幕底部有 80 的
-+            // 间隙，按自身高度滑出的倍数在不同机型上不够，会露半个角在屏幕里。
-+            // 这里按像素算，value 走到 1 时按钮整体（连阴影）已在屏幕外。
-+            builder: (context, child) {
-+              final t = Curves.easeInOut.transform(_ctrl.value);
-+              return Positioned(
-+                right: _kMargin,
-+                bottom: base - t * (base + _kFabSize + 8),
-+                child: IgnorePointer(
-+                  ignoring: _ctrl.value > 0.01,
-+                  child: child,
++    final mq = MediaQuery.of(context);
++    final pad = mq.padding;
++    // 键盘弹出时把可用高度收上去，按钮不会沉到键盘底下。
++    final usableH = math.max(0.0, mq.size.height - mq.viewInsets.bottom);
++    final viewW = mq.size.width - pad.left - pad.right;
++
++    // 按钮左上角能取到的最大坐标。
++    final max = Size(
++      math.max(0.0, viewW - _kSize - _kMargin * 2),
++      math.max(0.0, usableH - _kSize - pad.bottom - _kMargin * 2),
++    );
++
++    return Stack(
++      fit: StackFit.expand,
++      children: [
++        widget.child,
++        // 横屏 = 全屏播放，这时不显示，免得压在播放控件上。
++        if (!_landscape) _buildDraggable(max, pad),
++      ],
++    );
++  }
++
++  Widget _buildDraggable(Size max, EdgeInsets pad) {
++    final pos = _resolve(max);
++    final radius = BorderRadius.circular(16);
++
++    // 注意层级：AnimatedPositioned 必须是 Stack 的直接子节点，
++    // 淡入淡出那层 Transform 要放在它里面，否则 Positioned 的父节点不是 Stack 会报错。
++    return AnimatedPositioned(
++      // 拖动过程中要跟手（时长 0），松手吸附时才做动画。
++      duration: _dragging ? Duration.zero : _kSnapDuration,
++      curve: Curves.easeOutCubic,
++      left: pad.left + _kMargin + pos.dx,
++      top: pad.top + _kMargin + pos.dy,
++      child: AnimatedBuilder(
++        animation: _fade,
++        builder: (context, child) {
++          final t = Curves.easeInOut.transform(_fade.value);
++          return IgnorePointer(
++            ignoring: _fade.value > 0.01,
++            child: Opacity(
++              opacity: 1 - t,
++              child: Transform.translate(
++                offset: Offset(0, t * _kSize * _kSlideFactor),
++                child: child,
++              ),
++            ),
++          );
++        },
++        child: GestureDetector(
++          onTap: _handleTap,
++          onPanStart: _onDragStart,
++          onPanUpdate: (d) => _onDragUpdate(d, max),
++          onPanEnd: (d) => _onDragEnd(d, max),
++          child: Semantics(
++            button: true,
++            label: '返回上一级',
++            child: AnimatedScale(
++              scale: _dragging ? 1.06 : 1,
++              duration: const Duration(milliseconds: 120),
++              child: Material(
++                color: Theme.of(context).colorScheme.primaryContainer,
++                elevation: _dragging ? 10 : 6,
++                borderRadius: radius,
++                child: SizedBox(
++                  width: _kSize,
++                  height: _kSize,
++                  child: Icon(
++                    Icons.reply,
++                    size: 26,
++                    color: Theme.of(context).colorScheme.onPrimaryContainer,
++                  ),
 +                ),
-+              );
-+            },
-+            // 和 PiliPlus 的 FAB 同款：主题色、圆角方形、带阴影，尺寸也一样。
-+            child: FloatingActionButton(
-+              heroTag: null,
-+              onPressed: _handleTap,
-+              // 沿用原来那个「发表评论」的图标（本来就是弯箭头），不换更自然
-+              child: const Icon(Icons.reply, size: 26),
++              ),
 +            ),
 +          ),
-+        ],
++        ),
 +      ),
 +    );
 +  }
 +}
 diff --git a/lib/main.dart b/lib/main.dart
-index 988da8d..b6939e1 100644
+index 988da8d..d37ea0c 100644
 --- a/lib/main.dart
 +++ b/lib/main.dart
 @@ -3,6 +3,7 @@ import 'dart:io';
@@ -257,15 +297,32 @@ index 988da8d..b6939e1 100644
        ],
        scrollBehavior: PlatformUtils.isDesktop
            ? const CustomScrollBehavior()
-@@ -355,7 +357,12 @@ class MyApp extends StatelessWidget {
+@@ -355,7 +357,29 @@ class MyApp extends StatelessWidget {
          child: child,
        );
      }
 -    return child;
-+    // 右下角常驻返回键：左侧边缘触摸失灵时的替代入口。
-+    // 外观与动效对齐 PiliPlus 评论页那个浮动 FAB。
++    // 常驻可拖动返回键：左侧边缘触摸失灵时的替代入口。
++    // 位置存进 Hive 的 setting box，归一化到 0..1，换机型也不会跑到屏幕外。
 +    return BackButtonOverlay(
 +      onBack: _onBack,
++      loadPosition: () {
++        try {
++          final v = GStorage.setting.get('backBtnPos');
++          if (v is List && v.length == 2) {
++            return Offset(
++              (v[0] as num).toDouble(),
++              (v[1] as num).toDouble(),
++            );
++          }
++        } catch (_) {}
++        return null;
++      },
++      savePosition: (p) {
++        try {
++          GStorage.setting.put('backBtnPos', [p.dx, p.dy]);
++        } catch (_) {}
++      },
 +      child: child ?? const SizedBox.shrink(),
 +    );
    }
